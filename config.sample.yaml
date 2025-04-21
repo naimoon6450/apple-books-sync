@@ -1,0 +1,31 @@
+# config.sample.yaml
+# Rename this file to config.yaml and update the paths.
+
+paths:
+  # Source paths (Original iBooks locations on macOS)
+  # Adjust if your iBooks data is stored elsewhere.
+  source:
+    # Base path for iBooks data container. Use ~ for your home directory.
+    base: "~/Library/Containers/com.apple.iBooksX/Data/Documents"
+    annotation:
+      # Subdirectory containing the annotation database.
+      dir: "AEAnnotation"
+      # Filename of the annotation database. This might change with iBooks updates.
+      file: "AEAnnotation*.sqlite"
+    library:
+      # Subdirectory containing the library database.
+      dir: "BKLibrary"
+      # Filename of the library database. This might also change.
+      file: "BKLibrary*.sqlite"
+
+  # Database object names (usually stable unless Apple changes schema drastically)
+  db_objects:
+    annotation_attach_alias: "AEAnnotation" # Alias used when attaching the annotation DB
+    annotation_table: "ZAEANNOTATION"      # Main table name in the annotation DB
+    library_asset_table: "ZBKLIBRARYASSET"  # Main table name in the library DB
+
+  # Target directory where the source databases will be copied.
+  # This avoids needing direct access permissions to the iBooks container.
+  # Can be relative (like ./data) or an absolute path.
+  target:
+    dir: "./data" # Copies will be placed in a 'data' subdirectory 

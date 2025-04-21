@@ -1,0 +1,27 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, build artifact
+*.test
+
+# Output of the go coverage tool, specifically when run with the -o option
+*.out
+
+# Project-specific
+bin/
+data/
+config.yaml
+
+# OS-specific files
+.DS_Store
+
+# Go Module Cache (if created locally, good practice)
+.gomodcache/
+
+# IDE directories (optional)
+.vscode/
+.idea/ 
