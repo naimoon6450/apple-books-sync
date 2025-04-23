@@ -9,9 +9,9 @@ SELECT
     B.ZSORTTITLE                          AS book_title,
     B.ZSORTAUTHOR                         AS book_author
 FROM
-    [AEAnnotation].[ZAEANNOTATION] A
+    [AEAnnotation].[ZAEANNOTATION] A -- Alias and table substituted here
 LEFT JOIN
-    [ZBKLIBRARYASSET] B ON B.ZASSETID = A.ZANNOTATIONASSETID
+    [ZBKLIBRARYASSET] B ON B.ZASSETID = A.ZANNOTATIONASSETID -- Table substituted here
 WHERE
     A.ZANNOTATIONDELETED = 0
   AND
