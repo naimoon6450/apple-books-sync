@@ -8,8 +8,9 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
-	"github.com/spf13/viper"
+
 	"github.com/naimoon6450/booksync/internal/annotation"
+	"github.com/spf13/viper"
 )
 
 func init() {
@@ -80,11 +81,17 @@ func copyFile(src, dst string) error {
 
 func main() {
 	basePathRaw := viper.GetString("paths.source.base")
+	log.Printf("Read config paths.source.base: %s", basePathRaw)
 	srcAnnDir := viper.GetString("paths.source.annotation.dir")
+	log.Printf("Read config paths.source.annotation.dir: %s", srcAnnDir)
 	srcAnnFile := viper.GetString("paths.source.annotation.file")
+	log.Printf("Read config paths.source.annotation.file: %s", srcAnnFile)
 	srcLibDir := viper.GetString("paths.source.library.dir")
+	log.Printf("Read config paths.source.library.dir: %s", srcLibDir)
 	srcLibFile := viper.GetString("paths.source.library.file")
+	log.Printf("Read config paths.source.library.file: %s", srcLibFile)
 	targetDirRaw := viper.GetString("paths.target.dir")
+	log.Printf("Read config paths.target.dir: %s", targetDirRaw)
 
 	if basePathRaw == "" || srcAnnDir == "" || srcAnnFile == "" || srcLibDir == "" || srcLibFile == "" || targetDirRaw == "" {
 		log.Fatal("Incomplete path configuration in config.yaml. Please check keys under 'paths.source' and 'paths.target'.")
@@ -147,22 +154,20 @@ func main() {
 	for _, highlight := range highlights {
 		// Handle potential NULL values from sql.NullString
 		bookTitle := "[Unknown Title]"
-		if highlight.BookTitle.Valid {
-			bookTitle = highlight.BookTitle.String
+		if highlight.BookTitle != "" {
+			bookTitle = highlight.BookTitle
 		}
+
 		bookAuthor := "[Unknown Author]"
-		if highlight.BookAuthor.Valid {
-			bookAuthor = highlight.BookAuthor.String
+		if highlight.BookAuthor != "" {
+			bookAuthor = highlight.BookAuthor
 		}
-		
+
 		// Use the processed standard strings (bookAuthor, bookTitle) here
 		log.Printf("Highlight: [%s - %s] %s",
 			bookAuthor,
-			bookTitle,  
+			bookTitle,
 			highlight.HighlightText,
 		)
 	}
 }
-	
-	
-		
