@@ -18,11 +18,10 @@ paths:
       # Filename of the library database. This might also change.
       file: "BKLibrary*.sqlite"
 
-  # Database object names (usually stable unless Apple changes schema drastically)
+  # Database object names
   db_objects:
     annotation_attach_alias: "AEAnnotation" # Alias used when attaching the annotation DB
-    annotation_table: "ZAEANNOTATION"      # Main table name in the annotation DB
-    library_asset_table: "ZBKLIBRARYASSET"  # Main table name in the library DB
+    # Table names are now hardcoded in the application for consistency
 
   # Target directory where the source databases will be copied.
   # This avoids needing direct access permissions to the iBooks container.
