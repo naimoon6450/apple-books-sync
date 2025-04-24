@@ -1,0 +1,8 @@
+# {{ .Title }}
+
+**Author:** {{ .Author }}
+{{ range .Highlights }}
+- {{ . }}
+{{ else }}
+No highlights found.
+{{ end }} 
