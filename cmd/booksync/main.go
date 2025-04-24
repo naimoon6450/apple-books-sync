@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -9,7 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gosimple/slug"
 	"github.com/naimoon6450/booksync/internal/annotation"
+	"github.com/naimoon6450/booksync/internal/exporter"
+	"github.com/naimoon6450/booksync/internal/state"
 	"github.com/spf13/viper"
 )
 
@@ -80,6 +84,11 @@ func copyFile(src, dst string) error {
 }
 
 func main() {
+	// --- CLI flags ----------------------------------------------------------
+	vault := flag.String("vault", "", "Path to Obsidian vault (Dropbox‑synced)")
+	tpl := flag.String("template", "", "Path to Go text/template file")
+	flag.Parse()
+
 	basePathRaw := viper.GetString("paths.source.base")
 	log.Printf("Read config paths.source.base: %s", basePathRaw)
 	srcAnnDir := viper.GetString("paths.source.annotation.dir")
@@ -95,6 +104,10 @@ func main() {
 
 	if basePathRaw == "" || srcAnnDir == "" || srcAnnFile == "" || srcLibDir == "" || srcLibFile == "" || targetDirRaw == "" {
 		log.Fatal("Incomplete path configuration in config.yaml. Please check keys under 'paths.source' and 'paths.target'.")
+	}
+
+	if *vault == "" || *tpl == "" {
+		log.Fatal("vault and template flags are required")
 	}
 
 	srcBasePath, err := expandPath(basePathRaw)
@@ -135,39 +148,73 @@ func main() {
 	log.Printf("Using Annotation Path: %s", dstAnnPath)
 	log.Printf("Using Library Path: %s", dstLibPath)
 
+	// --- database handles ---------------------------------------------------
 	store, err := annotation.NewStore(dstAnnPath, dstLibPath)
 	if err != nil {
 		log.Fatalf("Failed to create store: %v", err)
 	}
 	defer store.Close()
 
+	// --- state file ---------------------------------------------------------
+	vaultPath, err := expandPath(*vault)
+	if err != nil {
+		log.Fatalf("Failed to expand vault path '%s': %v", *vault, err)
+	}
+
+	st, err := state.Load(vaultPath)
+	if err != nil {
+		log.Fatalf("Failed to load state: %v", err)
+	}
+
+	// --- exporter -----------------------------------------------------------
+	exp, err := exporter.New(vaultPath, *tpl)
+	if err != nil {
+		log.Fatalf("Failed to create exporter: %v", err)
+	}
+
+	// --- pull + write -------------------------------------------------------
 	highlights, err := store.GetLatestHighlights()
 	if err != nil {
-		log.Fatalf("Failed to get highlights: %v", err)
+		log.Fatalf("Failed to get latest highlights: %v", err)
 	}
 
 	if len(highlights) == 0 {
-		log.Println("No highlights found")
+		log.Println("No new highlights found")
 		return
 	}
 
-	for _, highlight := range highlights {
-		// Handle potential NULL values from sql.NullString
-		bookTitle := "[Unknown Title]"
-		if highlight.BookTitle != "" {
-			bookTitle = highlight.BookTitle
+	// Group highlights by book
+	bookData := make(map[string]*exporter.BookData)
+
+	// Collect all highlights by book
+	for _, h := range highlights {
+		bookKey := slug.Make(h.BookTitle)
+
+		if _, exists := bookData[bookKey]; !exists {
+			bookData[bookKey] = &exporter.BookData{
+				Title:      h.BookTitle,
+				Author:     h.BookAuthor,
+				Highlights: []string{},
+			}
 		}
 
-		bookAuthor := "[Unknown Author]"
-		if highlight.BookAuthor != "" {
-			bookAuthor = highlight.BookAuthor
-		}
+		bookData[bookKey].Highlights = append(bookData[bookKey].Highlights, h.HighlightText)
 
-		// Use the processed standard strings (bookAuthor, bookTitle) here
-		log.Printf("Highlight: [%s - %s] %s",
-			bookAuthor,
-			bookTitle,
-			highlight.HighlightText,
-		)
+		// Update the last primary key
+		st.LastPK++
 	}
+
+	// Export each book's highlights
+	for _, data := range bookData {
+		if err := exp.WriteBook(*data); err != nil {
+			log.Printf("Export failed for book %s: %v", data.Title, err)
+			continue
+		}
+	}
+
+	if err := st.Save(); err != nil {
+		log.Fatalf("Failed to save state: %v", err)
+	}
+
+	log.Printf("Exported %d new highlight(s) across %d books", len(highlights), len(bookData))
 }
