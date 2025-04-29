@@ -16,6 +16,7 @@ import (
 var sqlFS embed.FS
 
 type Highlight struct {
+	PK            int64
 	HighlightText string
 	BookTitle     string
 	BookAuthor    string
@@ -114,7 +115,8 @@ func removeComments(sql string) string {
 	return withoutComments
 }
 
-func (s *Store) GetLatestHighlights() ([]*Highlight, error) {
+// GetHighlightsSince fetches all highlights with a primary key greater than lastPK.
+func (s *Store) GetHighlightsSince(lastPK int64) ([]*Highlight, error) {
 	// Get the query from embedded files
 	sqlBytes, err := sqlFS.ReadFile("sql/latest_highlights.sql")
 	if err != nil {
@@ -143,20 +145,23 @@ func (s *Store) GetLatestHighlights() ([]*Highlight, error) {
 	querySQL = strings.TrimSpace(querySQL)
 
 	// For debugging
-	// log.Printf("Executing query: %s", querySQL)
+	log.Printf("Executing GetHighlightsSince query with lastPK = %d", lastPK)
+	// log.Printf("Query: %s", querySQL)
 
-	rows, err := s.db.Query(querySQL)
+	rows, err := s.db.Query(querySQL, lastPK) // Pass lastPK as parameter
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute latest highlights query: %w", err)
+		return nil, fmt.Errorf("failed to execute highlights query with lastPK %d: %w", lastPK, err)
 	}
 	defer rows.Close()
 
 	var highlights []*Highlight
 	for rows.Next() {
 		var h Highlight
+		var pk int64 // Variable to scan PK into
 		var highlight, bookTitle, bookAuthor string
 
 		errScan := rows.Scan(
+			&pk, // Scan the PK
 			&highlight,
 			&bookTitle,
 			&bookAuthor,
@@ -165,6 +170,7 @@ func (s *Store) GetLatestHighlights() ([]*Highlight, error) {
 			return nil, fmt.Errorf("failed to scan row: %w", errScan)
 		}
 
+		h.PK = pk // Assign scanned PK
 		h.HighlightText = highlight
 		h.BookTitle = bookTitle
 		h.BookAuthor = bookAuthor
@@ -176,5 +182,6 @@ func (s *Store) GetLatestHighlights() ([]*Highlight, error) {
 		return nil, fmt.Errorf("error iterating rows: %w", err)
 	}
 
+	log.Printf("Fetched %d highlights since PK %d", len(highlights), lastPK)
 	return highlights, nil
 }
