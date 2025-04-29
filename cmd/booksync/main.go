@@ -1,19 +1,23 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"os/user"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/gosimple/slug"
 	"github.com/naimoon6450/booksync/internal/annotation"
 	"github.com/naimoon6450/booksync/internal/exporter"
 	"github.com/naimoon6450/booksync/internal/state"
+	"github.com/naimoon6450/booksync/internal/watcher"
 	"github.com/spf13/viper"
 )
 
@@ -85,8 +89,9 @@ func copyFile(src, dst string) error {
 
 func main() {
 	// --- CLI flags ----------------------------------------------------------
-	vault := flag.String("vault", "", "Path to Obsidian vault (Dropbox‑synced)")
+	vault := flag.String("vault", "", "Path to Obsidian vault")
 	tpl := flag.String("template", "", "Path to Go text/template file")
+	watch := flag.Bool("watch", false, "Enable watch mode to continuously sync changes")
 	flag.Parse()
 
 	basePathRaw := viper.GetString("paths.source.base")
@@ -114,17 +119,36 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to expand source base path '%s': %v", basePathRaw, err)
 	}
-	targetDir, err := expandPath(targetDirRaw) // Also expand target in case ~ is used
+	targetDir, err := expandPath(targetDirRaw)
 	if err != nil {
 		log.Fatalf("Failed to expand target directory '%s': %v", targetDirRaw, err)
 	}
 
 	// Construct source and destination paths
-	srcAnnPath := filepath.Join(srcBasePath, srcAnnDir, srcAnnFile)
-	srcLibPath := filepath.Join(srcBasePath, srcLibDir, srcLibFile)
+	srcAnnPattern := filepath.Join(srcBasePath, srcAnnDir, srcAnnFile)
+	srcLibPattern := filepath.Join(srcBasePath, srcLibDir, srcLibFile)
 
-	dstAnnPath := filepath.Join(targetDir, srcAnnFile)
-	dstLibPath := filepath.Join(targetDir, srcLibFile)
+	srcAnnMatches, err := filepath.Glob(srcAnnPattern)
+	if err != nil || len(srcAnnMatches) == 0 {
+		log.Fatalf("Error finding source annotation file matching pattern '%s' (or no matches found): %v", srcAnnPattern, err)
+	}
+	srcAnnPath := srcAnnMatches[0]
+	actualAnnFilename := filepath.Base(srcAnnPath)
+
+	srcLibMatches, err := filepath.Glob(srcLibPattern)
+	if err != nil || len(srcLibMatches) == 0 {
+		log.Fatalf("Error finding source library file matching pattern '%s' (or no matches found): %v", srcLibPattern, err)
+	}
+	srcLibPath := srcLibMatches[0]
+	actualLibFilename := filepath.Base(srcLibPath)
+
+	dstAnnPath := filepath.Join(targetDir, actualAnnFilename)
+	dstLibPath := filepath.Join(targetDir, actualLibFilename)
+
+	log.Printf("Resolved Source Annotation DB: %s", srcAnnPath)
+	log.Printf("Resolved Source Library DB: %s", srcLibPath)
+	log.Printf("Using Target Annotation DB: %s", dstAnnPath)
+	log.Printf("Using Target Library DB: %s", dstLibPath)
 
 	// Check if destination files exist
 	_, errAnn := os.Stat(dstAnnPath)
@@ -144,18 +168,14 @@ func main() {
 		log.Printf("Using existing database files in %s", targetDir)
 	}
 
-	// Use the DESTINATION paths for the store
-	log.Printf("Using Annotation Path: %s", dstAnnPath)
-	log.Printf("Using Library Path: %s", dstLibPath)
-
-	// --- database handles ---------------------------------------------------
+	// --- Common Initialization (Store, State, Exporter) ---------------------
+	log.Printf("Initializing common components...")
 	store, err := annotation.NewStore(dstAnnPath, dstLibPath)
 	if err != nil {
 		log.Fatalf("Failed to create store: %v", err)
 	}
 	defer store.Close()
 
-	// --- state file ---------------------------------------------------------
 	vaultPath, err := expandPath(*vault)
 	if err != nil {
 		log.Fatalf("Failed to expand vault path '%s': %v", *vault, err)
@@ -166,55 +186,90 @@ func main() {
 		log.Fatalf("Failed to load state: %v", err)
 	}
 
-	// --- exporter -----------------------------------------------------------
 	exp, err := exporter.New(vaultPath, *tpl)
 	if err != nil {
 		log.Fatalf("Failed to create exporter: %v", err)
 	}
 
-	// --- pull + write -------------------------------------------------------
-	highlights, err := store.GetLatestHighlights()
-	if err != nil {
-		log.Fatalf("Failed to get latest highlights: %v", err)
-	}
+	// --- Mode Selection (Watch or One-off Sync) -----------------------------
+	if *watch {
+		// --- Watch Mode --- //
+		log.Println("Watch mode enabled. Starting watcher...")
+		log.Printf("Watching file: %s", dstAnnPath)
+		log.Println("Press Ctrl+C to stop.")
 
-	if len(highlights) == 0 {
-		log.Println("No new highlights found")
-		return
-	}
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
 
-	// Group highlights by book
-	bookData := make(map[string]*exporter.BookData)
+		st.Path = dstAnnPath
 
-	// Collect all highlights by book
-	for _, h := range highlights {
-		bookKey := slug.Make(h.BookTitle)
+		err = watcher.WatchAndSync(ctx, store, exp, st)
+		if err != nil && err != context.Canceled {
+			log.Fatalf("Watcher failed: %v", err)
+		}
+		log.Println("Watcher stopped.")
 
-		if _, exists := bookData[bookKey]; !exists {
-			bookData[bookKey] = &exporter.BookData{
-				Title:      h.BookTitle,
-				Author:     h.BookAuthor,
-				Highlights: []string{},
+	} else {
+		// --- One-off Sync Mode --- //
+		log.Println("Performing one-off sync...")
+		highlights, err := store.GetHighlightsSince(st.LastPK)
+		if err != nil {
+			log.Fatalf("Failed to get highlights since PK %d: %v", st.LastPK, err)
+		}
+
+		if len(highlights) == 0 {
+			log.Printf("No new highlights found since PK %d.", st.LastPK)
+			return
+		}
+
+		bookDataMap := make(map[string]*exporter.BookData)
+		var highlightsCount int
+		var maxPK int64 = st.LastPK
+
+		for _, h := range highlights {
+			bookKey := slug.Make(h.BookTitle)
+
+			if _, exists := bookDataMap[bookKey]; !exists {
+				bookDataMap[bookKey] = &exporter.BookData{
+					Title:      h.BookTitle,
+					Author:     h.BookAuthor,
+					Highlights: []string{},
+				}
+			}
+			bookDataMap[bookKey].Highlights = append(bookDataMap[bookKey].Highlights, h.HighlightText)
+			highlightsCount++
+
+			if h.PK > maxPK {
+				maxPK = h.PK
 			}
 		}
 
-		bookData[bookKey].Highlights = append(bookData[bookKey].Highlights, h.HighlightText)
+		log.Printf("Processing %d new highlight(s) across %d book(s) (max PK: %d)...", highlightsCount, len(bookDataMap), maxPK)
 
-		// Update the last primary key
-		st.LastPK++
-	}
+		var exportErrors int
+		for _, data := range bookDataMap {
+			if err := exp.WriteBook(*data); err != nil {
+				log.Printf("ERROR: Export failed for book '%s': %v", data.Title, err)
+				exportErrors++
+			}
+		}
 
-	// Export each book's highlights
-	for _, data := range bookData {
-		if err := exp.WriteBook(*data); err != nil {
-			log.Printf("Export failed for book %s: %v", data.Title, err)
-			continue
+		if maxPK > st.LastPK {
+			log.Printf("Updating last PK from %d to %d", st.LastPK, maxPK)
+			st.LastPK = maxPK
+			if err := st.Save(); err != nil {
+				log.Fatalf("FATAL: Failed to save state after update: %v", err)
+			} else {
+				log.Printf("State saved successfully with last PK %d", st.LastPK)
+			}
+		} else {
+			log.Printf("No update to last PK needed (still %d).", st.LastPK)
+		}
+
+		if exportErrors > 0 {
+			log.Printf("One-off sync completed with %d errors.", exportErrors)
+		} else {
+			log.Printf("One-off sync completed successfully for %d book(s).", len(bookDataMap))
 		}
 	}
-
-	if err := st.Save(); err != nil {
-		log.Fatalf("Failed to save state: %v", err)
-	}
-
-	log.Printf("Exported %d new highlight(s) across %d books", len(highlights), len(bookData))
 }
